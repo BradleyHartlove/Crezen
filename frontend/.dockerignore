@@ -1,0 +1,8 @@
+Dockerfile
+.dockerignore
+*.md
+.git
+node_modules
+dist
+src/wasm/pkg
+src/wasm/target
