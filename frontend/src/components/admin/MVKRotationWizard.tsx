@@ -111,7 +111,7 @@ export function MVKRotationWizard({ open, onClose }: Props) {
           <div className="space-y-4">
             <div className="flex items-start gap-3 rounded border border-yellow-400/20 bg-yellow-400/5 p-3">
               <AlertTriangle size={16} className="text-yellow-400 shrink-0 mt-0.5" />
-              <div className="text-xs text-yellow-200 space-y-1">
+              <div className="text-xs text-yellow-900 dark:text-yellow-200 space-y-1">
                 <p className="font-semibold">This will re-encrypt every credential with a new Master Vault Key.</p>
                 <p>All users will be signed out and must re-enter the new MVK at next login.</p>
                 <p>This operation cannot be undone.</p>

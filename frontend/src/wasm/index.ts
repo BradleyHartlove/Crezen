@@ -5,6 +5,8 @@ import init, {
   decrypt_credential,
   lock_vault,
   is_vault_unlocked,
+  generate_recovery_codes,
+  recover_vault_key,
 } from './pkg/crezen_wasm'
 
 let initialized = false
@@ -32,4 +34,10 @@ export const wasm = {
   lockVault: (): void => lock_vault(),
 
   isVaultUnlocked: (): boolean => is_vault_unlocked(),
+
+  generateRecoveryCodes: (count: number): Array<{ code: string; salt_b64: string; encrypted_b64: string }> =>
+    JSON.parse(generate_recovery_codes(count)),
+
+  recoverVaultKey: (code: string, saltB64: string, encryptedB64: string): void =>
+    recover_vault_key(code, saltB64, encryptedB64),
 }

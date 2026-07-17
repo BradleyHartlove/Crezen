@@ -1,8 +1,12 @@
 package handlers
 
 import (
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"net/http"
+	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -118,7 +122,11 @@ func (h *VaultHandler) Rotate(c *gin.Context) {
 			}
 		}
 		// revoke all refresh tokens to force re-login
-		return tx.Model(&models.RefreshToken{}).Where("revoked = false").Update("revoked", true).Error
+		if err := tx.Model(&models.RefreshToken{}).Where("revoked = false").Update("revoked", true).Error; err != nil {
+			return err
+		}
+		// invalidate recovery codes — they encrypt the old vault key
+		return tx.Where("1=1").Delete(&models.RecoveryCode{}).Error
 	})
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "rotation failed"})
@@ -127,4 +135,100 @@ func (h *VaultHandler) Rotate(c *gin.Context) {
 
 	writeAudit(h.DB, &userID, username, models.AuditVaultMVKRotated, nil, nil)
 	c.JSON(http.StatusOK, gin.H{"message": "rotation complete"})
+}
+
+type recoveryCodeEntry struct {
+	Code         string `json:"code"          binding:"required"`
+	SaltB64      string `json:"salt_b64"      binding:"required"`
+	EncryptedB64 string `json:"encrypted_b64" binding:"required"`
+}
+
+type storeRecoveryCodesRequest struct {
+	Codes []recoveryCodeEntry `json:"codes" binding:"required,min=1"`
+}
+
+func normalizeAndHashCode(code string) (string, error) {
+	clean := strings.ToUpper(strings.ReplaceAll(code, "-", ""))
+	rawBytes, err := hex.DecodeString(clean)
+	if err != nil {
+		return "", err
+	}
+	sum := sha256.Sum256(rawBytes)
+	return hex.EncodeToString(sum[:]), nil
+}
+
+func (h *VaultHandler) StoreRecoveryCodes(c *gin.Context) {
+	var req storeRecoveryCodesRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	records := make([]models.RecoveryCode, 0, len(req.Codes))
+	for _, entry := range req.Codes {
+		hash, err := normalizeAndHashCode(entry.Code)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid code format"})
+			return
+		}
+		records = append(records, models.RecoveryCode{
+			CodeHash:     hash,
+			SaltB64:      entry.SaltB64,
+			EncryptedB64: entry.EncryptedB64,
+		})
+	}
+
+	err := h.DB.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Where("1=1").Delete(&models.RecoveryCode{}).Error; err != nil {
+			return err
+		}
+		return tx.Create(&records).Error
+	})
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to store recovery codes"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"count": len(records)})
+}
+
+func (h *VaultHandler) ListRecoveryCodes(c *gin.Context) {
+	var codes []models.RecoveryCode
+	if err := h.DB.Select("id, created_at, last_used_at").Find(&codes).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "query failed"})
+		return
+	}
+	c.JSON(http.StatusOK, codes)
+}
+
+type recoverRequest struct {
+	Code string `json:"code" binding:"required"`
+}
+
+func (h *VaultHandler) Recover(c *gin.Context) {
+	var req recoverRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	hash, err := normalizeAndHashCode(req.Code)
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid recovery code"})
+		return
+	}
+
+	var rc models.RecoveryCode
+	if err := h.DB.Where("code_hash = ?", hash).First(&rc).Error; err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid recovery code"})
+		return
+	}
+
+	now := time.Now()
+	h.DB.Model(&rc).Update("last_used_at", now)
+
+	c.JSON(http.StatusOK, gin.H{
+		"salt_b64":      rc.SaltB64,
+		"encrypted_b64": rc.EncryptedB64,
+	})
 }

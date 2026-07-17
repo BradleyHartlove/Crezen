@@ -20,6 +20,8 @@ export function LoginPage() {
   const [username, setUsername] = useState('')
   const [password, setPassword] = useState('')
   const [mvk, setMvk] = useState('')
+  const [recoveryCode, setRecoveryCode] = useState('')
+  const [useRecovery, setUseRecovery] = useState(false)
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
 
@@ -38,22 +40,28 @@ export function LoginPage() {
       const loginRes = await authApi.login(username, password)
       setAuth(loginRes.user, loginRes.access_token)
 
-      const config = await vaultApi.getConfig()
-      const verifier = wasm.deriveVerifier(
-        mvk,
-        config.argon2_salt,
-        config.argon2_time,
-        config.argon2_memory,
-        config.argon2_lanes as unknown as number
-      )
-      await vaultApi.verifyMvk(verifier)
-      wasm.initVaultKey(
-        mvk,
-        config.argon2_salt,
-        config.argon2_time,
-        config.argon2_memory,
-        config.argon2_lanes as unknown as number
-      )
+      if (useRecovery) {
+        const blob = await vaultApi.recover(recoveryCode)
+        wasm.recoverVaultKey(recoveryCode, blob.salt_b64, blob.encrypted_b64)
+      } else {
+        const config = await vaultApi.getConfig()
+        const verifier = wasm.deriveVerifier(
+          mvk,
+          config.argon2_salt,
+          config.argon2_time,
+          config.argon2_memory,
+          config.argon2_lanes as unknown as number
+        )
+        await vaultApi.verifyMvk(verifier)
+        wasm.initVaultKey(
+          mvk,
+          config.argon2_salt,
+          config.argon2_time,
+          config.argon2_memory,
+          config.argon2_lanes as unknown as number
+        )
+      }
+
       setUnlocked(true)
       navigate('/vault')
     } catch (e: unknown) {
@@ -82,10 +90,30 @@ export function LoginPage() {
               <Input id="password" type="password" value={password} onChange={(e) => setPassword(e.target.value)} placeholder="••••••••" />
             </div>
             <hr className="border-border" />
-            <div>
-              <Label htmlFor="mvk">Master Vault Key</Label>
-              <Input id="mvk" type="password" value={mvk} onChange={(e) => setMvk(e.target.value)} placeholder="shared team vault key" />
-            </div>
+            {useRecovery ? (
+              <div>
+                <Label htmlFor="recovery-code">Recovery Code</Label>
+                <Input
+                  id="recovery-code"
+                  value={recoveryCode}
+                  onChange={(e) => setRecoveryCode(e.target.value)}
+                  placeholder="XXXX-XXXX-XXXX-XXXX-XXXX-XXXX-XXXX-XXXX"
+                  className="font-mono text-xs"
+                />
+              </div>
+            ) : (
+              <div>
+                <Label htmlFor="mvk">Master Vault Key</Label>
+                <Input id="mvk" type="password" value={mvk} onChange={(e) => setMvk(e.target.value)} placeholder="shared team vault key" />
+              </div>
+            )}
+            <button
+              type="button"
+              onClick={() => { setUseRecovery((v) => !v); setError('') }}
+              className="text-xs text-muted hover:text-accent underline underline-offset-2 block"
+            >
+              {useRecovery ? 'Use Master Vault Key instead' : 'Forgot the MVK? Use a recovery code'}
+            </button>
             {error && <p className="text-xs text-destructive">{error}</p>}
             <Button type="submit" className="w-full" disabled={loading || !ready}>
               {!ready ? 'Initializing…' : loading ? 'Signing in…' : 'Sign In'}

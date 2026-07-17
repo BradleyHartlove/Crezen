@@ -47,7 +47,9 @@ func New(db *gorm.DB, jwtSecret, corsOrigin string) *gin.Engine {
 	protected.POST("/auth/logout", authH.Logout)
 
 	protected.GET("/vault/config", vaultH.GetConfig)
+	recoveryRL := middleware.RateLimitMiddleware(10.0/60, 5)
 	protected.POST("/vault/verify-mvk", vaultH.VerifyMVK)
+	protected.POST("/vault/recover", recoveryRL, vaultH.Recover)
 
 	protected.GET("/namespaces", nsH.List)
 	protected.GET("/credentials", credH.List)
@@ -67,6 +69,8 @@ func New(db *gorm.DB, jwtSecret, corsOrigin string) *gin.Engine {
 	admin.Use(adminMW)
 
 	admin.POST("/vault/rotate", vaultH.Rotate)
+	admin.POST("/vault/recovery-codes", vaultH.StoreRecoveryCodes)
+	admin.GET("/vault/recovery-codes", vaultH.ListRecoveryCodes)
 	admin.GET("/users", usersH.List)
 	admin.PATCH("/users/:id/activate", usersH.Activate)
 	admin.PATCH("/users/:id/role", usersH.SetRole)

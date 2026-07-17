@@ -137,6 +137,103 @@ pub fn decrypt_credential(ciphertext_b64: &str) -> Result<String, JsValue> {
     })
 }
 
+/// Generate `count` recovery codes that each encrypt the current vault key.
+/// Vault must be unlocked. Returns a JSON string: [{code, salt_b64, encrypted_b64}, …].
+#[wasm_bindgen]
+pub fn generate_recovery_codes(count: u32) -> Result<String, JsValue> {
+    VAULT_KEY.with(|k| {
+        let borrow = k.borrow();
+        let vault_key = borrow.as_ref().ok_or_else(|| js_err("vault locked"))?;
+
+        let mut entries = Vec::new();
+        for _ in 0..count {
+            // 16 random bytes → 32-char uppercase hex → "XXXX-XXXX-XXXX-XXXX-XXXX-XXXX-XXXX-XXXX"
+            let mut code_bytes = [0u8; 16];
+            getrandom::getrandom(&mut code_bytes).map_err(|_| js_err("rng failed"))?;
+            let hex_str: String = code_bytes.iter().map(|b| format!("{:02X}", b)).collect();
+            let code_formatted = hex_str
+                .as_bytes()
+                .chunks(4)
+                .map(|c| std::str::from_utf8(c).unwrap())
+                .collect::<Vec<_>>()
+                .join("-");
+
+            // Per-code HKDF salt
+            let mut salt = [0u8; 16];
+            getrandom::getrandom(&mut salt).map_err(|_| js_err("rng failed"))?;
+
+            // Derive AES key: HKDF(ikm=code_bytes, salt=salt, info="crezen-recovery")
+            let hk = Hkdf::<Sha256>::new(Some(&salt), &code_bytes);
+            let mut enc_key = Zeroizing::new([0u8; 32]);
+            hk.expand(b"crezen-recovery", &mut *enc_key)
+                .map_err(|_| js_err("hkdf expand failed"))?;
+
+            // AES-256-GCM encrypt the vault key
+            let key = Key::<Aes256Gcm>::from_slice(&*enc_key);
+            let cipher = Aes256Gcm::new(key);
+            let mut nonce_bytes = [0u8; 12];
+            getrandom::getrandom(&mut nonce_bytes).map_err(|_| js_err("rng failed"))?;
+            let nonce = Nonce::from_slice(&nonce_bytes);
+            let ct = cipher
+                .encrypt(nonce, vault_key.as_slice())
+                .map_err(|_| js_err("encrypt failed"))?;
+
+            let mut blob = Vec::with_capacity(12 + ct.len());
+            blob.extend_from_slice(&nonce_bytes);
+            blob.extend_from_slice(&ct);
+
+            entries.push(format!(
+                r#"{{"code":"{}","salt_b64":"{}","encrypted_b64":"{}"}}"#,
+                code_formatted,
+                B64.encode(salt),
+                B64.encode(&blob)
+            ));
+        }
+
+        Ok(format!("[{}]", entries.join(",")))
+    })
+}
+
+/// Decrypt a recovery code blob and store the recovered vault key in WASM memory,
+/// effectively unlocking the vault.
+#[wasm_bindgen]
+pub fn recover_vault_key(code: &str, salt_b64: &str, encrypted_b64: &str) -> Result<(), JsValue> {
+    // Normalize: strip dashes, must be exactly 32 hex chars (16 bytes)
+    let clean: String = code.chars().filter(|c| *c != '-').collect::<String>().to_uppercase();
+    if clean.len() != 32 {
+        return Err(js_err("invalid recovery code length"));
+    }
+    let mut code_bytes = [0u8; 16];
+    for (i, chunk) in clean.as_bytes().chunks(2).enumerate() {
+        let hex_pair = std::str::from_utf8(chunk).map_err(|_| js_err("invalid code"))?;
+        code_bytes[i] = u8::from_str_radix(hex_pair, 16).map_err(|_| js_err("invalid code hex"))?;
+    }
+
+    let salt = B64.decode(salt_b64).map_err(|_| js_err("invalid salt encoding"))?;
+    let blob = B64.decode(encrypted_b64).map_err(|_| js_err("invalid encrypted data"))?;
+    if blob.len() < 12 {
+        return Err(js_err("encrypted data too short"));
+    }
+
+    let hk = Hkdf::<Sha256>::new(Some(&salt), &code_bytes);
+    let mut enc_key = Zeroizing::new([0u8; 32]);
+    hk.expand(b"crezen-recovery", &mut *enc_key)
+        .map_err(|_| js_err("hkdf expand failed"))?;
+
+    let key = Key::<Aes256Gcm>::from_slice(&*enc_key);
+    let cipher = Aes256Gcm::new(key);
+    let nonce = Nonce::from_slice(&blob[..12]);
+    let vault_key_bytes = cipher
+        .decrypt(nonce, &blob[12..])
+        .map_err(|_| js_err("invalid recovery code"))?;
+
+    VAULT_KEY.with(|k| {
+        *k.borrow_mut() = Some(Zeroizing::new(vault_key_bytes));
+    });
+
+    Ok(())
+}
+
 /// Zero and drop the vault key from WASM memory.
 #[wasm_bindgen]
 pub fn lock_vault() {
