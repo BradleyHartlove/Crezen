@@ -7,7 +7,6 @@ use aes_gcm::{
 use argon2::{Algorithm, Argon2, Params, Version};
 use base64::{engine::general_purpose::STANDARD as B64, Engine};
 use hkdf::Hkdf;
-use js_sys::Error;
 use sha2::Sha256;
 use wasm_bindgen::prelude::*;
 use zeroize::Zeroizing;
@@ -17,7 +16,10 @@ thread_local! {
 }
 
 fn js_err(msg: &str) -> JsValue {
-    Error::new(msg).into()
+    #[cfg(target_arch = "wasm32")]
+    { js_sys::Error::new(msg).into() }
+    #[cfg(not(target_arch = "wasm32"))]
+    { JsValue::from_str(msg) }
 }
 
 fn argon2_derive(
@@ -246,4 +248,78 @@ pub fn lock_vault() {
 #[wasm_bindgen]
 pub fn is_vault_unlocked() -> bool {
     VAULT_KEY.with(|k| k.borrow().is_some())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const TEST_SALT_B64: &str = "AAAAAAAAAAAAAAAAAAAAAA=="; // 16 zero bytes in base64
+
+    fn low_cost_argon2(mvk: &str) -> Zeroizing<Vec<u8>> {
+        // time=1, mem=1024 KiB, lanes=1 — fast enough for unit tests
+        argon2_derive(mvk, TEST_SALT_B64, 1, 1024, 1).expect("argon2_derive failed")
+    }
+
+    #[test]
+    fn test_derive_from_master_deterministic() {
+        let master = vec![0u8; 32];
+        let a = derive_from_master(&master, b"crezen-verifier").unwrap();
+        let b = derive_from_master(&master, b"crezen-verifier").unwrap();
+        assert_eq!(*a, *b);
+    }
+
+    #[test]
+    fn test_derive_from_master_labels_differ() {
+        let master = vec![1u8; 32];
+        let verifier = derive_from_master(&master, b"crezen-verifier").unwrap();
+        let vault_key = derive_from_master(&master, b"crezen-vault-key").unwrap();
+        assert_ne!(*verifier, *vault_key, "different labels must yield different keys");
+    }
+
+    #[test]
+    fn test_derive_from_master_output_length() {
+        let master = vec![2u8; 32];
+        let out = derive_from_master(&master, b"test").unwrap();
+        assert_eq!(out.len(), 32);
+    }
+
+    #[test]
+    fn test_argon2_derive_deterministic() {
+        let a = low_cost_argon2("my-mvk");
+        let b = low_cost_argon2("my-mvk");
+        assert_eq!(*a, *b);
+    }
+
+    #[test]
+    fn test_argon2_derive_mvk_sensitivity() {
+        let a = low_cost_argon2("mvk-one");
+        let b = low_cost_argon2("mvk-two");
+        assert_ne!(*a, *b, "different MVKs must yield different master keys");
+    }
+
+    #[test]
+    fn test_vault_lifecycle() {
+        // Ensure locked at start of test
+        lock_vault();
+        assert!(!is_vault_unlocked(), "vault should start locked");
+
+        // Manually inject a key to simulate init_vault_key
+        VAULT_KEY.with(|k| {
+            *k.borrow_mut() = Some(Zeroizing::new(vec![42u8; 32]));
+        });
+        assert!(is_vault_unlocked(), "vault should be unlocked after key injection");
+
+        lock_vault();
+        assert!(!is_vault_unlocked(), "vault should be locked after lock_vault()");
+    }
+
+    #[test]
+    fn test_verifier_and_vault_key_differ() {
+        // The verifier and vault_key derived from the same master must be distinct
+        let master = low_cost_argon2("test-mvk");
+        let verifier = derive_from_master(&master, b"crezen-verifier").unwrap();
+        let vault_key = derive_from_master(&master, b"crezen-vault-key").unwrap();
+        assert_ne!(*verifier, *vault_key);
+    }
 }

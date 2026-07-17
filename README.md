@@ -63,6 +63,8 @@ Other make targets:
 make down     # stop containers
 make restart  # restart without rebuild
 make clean    # stop + remove volumes (deletes all data)
+make lint     # run all linters (Go, frontend, Rust)
+make test     # run all unit tests (Go, Rust)
 ```
 
 ---
@@ -100,9 +102,10 @@ Copy `.env.example` to `.env` and fill in:
 
 ```sh
 cd backend
-go build ./...        # compile check
-go test ./...         # run tests
-go run ./cmd/server   # run locally (needs a running Postgres)
+go build ./...             # compile check
+go test -race ./...        # run unit tests
+go run ./cmd/server        # run locally (needs a running Postgres)
+golangci-lint run ./...    # lint (requires golangci-lint)
 ```
 
 ### Frontend (React + TypeScript)
@@ -110,18 +113,38 @@ go run ./cmd/server   # run locally (needs a running Postgres)
 ```sh
 cd frontend
 npm install
-npm run dev     # Vite dev server on :5173, proxies /api → localhost:8080
-npm run build   # tsc + vite build
+npm run dev            # Vite dev server on :5173, proxies /api → localhost:8080
+npm run build          # tsc + vite build
+npm run lint           # ESLint
+npm run lint:fix       # ESLint with auto-fix
+npm run format         # Prettier write
+npm run format:check   # Prettier check (used in CI)
 ```
 
 ### WASM (Rust)
 
 ```sh
 cd frontend/src/wasm
-wasm-pack build --target web --out-dir pkg
+cargo test                                                  # unit tests (native target)
+cargo clippy --target wasm32-unknown-unknown -- -D warnings # lint
+wasm-pack build --target web --out-dir pkg                  # rebuild WASM bundle
 ```
 
 The compiled `pkg/` is committed so the frontend builds without a Rust toolchain. Rebuild only when `src/lib.rs` changes.
+
+---
+
+## CI
+
+GitHub Actions runs on every push to `main`, on pull request open/update, and can be triggered manually via **Actions → CI → Run workflow**.
+
+| Job | What it checks |
+|---|---|
+| Lint Frontend | ESLint + Prettier |
+| Lint Backend | golangci-lint |
+| Test Backend | `go test -race ./...` |
+| Lint WASM | `cargo clippy` (wasm32 target) |
+| Test WASM | `cargo test` (native target) |
 
 ---
 

@@ -27,6 +27,12 @@ go.work.sum
 # env file
 .env
 
+# Frontend
+frontend/node_modules/*
+
+# Rust WASM build artifacts
+frontend/src/wasm/target/
+
 # Editor/IDE
 # .idea/
 # .vscode/

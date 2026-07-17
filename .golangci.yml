@@ -1,0 +1,19 @@
+run:
+  timeout: 5m
+
+linters:
+  enable:
+    - govet
+    - errcheck
+    - staticcheck
+    - gosimple
+    - ineffassign
+    - unused
+    - gofmt
+
+issues:
+  exclude-rules:
+    # errcheck is noisy in test files (e.g. ignoring errors from router.ServeHTTP)
+    - path: _test\.go
+      linters:
+        - errcheck
